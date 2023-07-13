@@ -21,8 +21,16 @@ from peft import (
     prepare_model_for_int8_training,
     set_peft_model_state_dict,
 )
-from tqdm.auto import tqdm
-from transformers import Trainer, TrainingArguments, AutoTokenizer, AutoModel, AutoConfig, DataCollatorForSeq2Seq
+from tqdm import tqdm
+from transformers import (
+    Trainer,
+    TrainingArguments,
+    AutoTokenizer,
+    AutoModel,
+    DataCollatorForSeq2Seq,
+    BitsAndBytesConfig,
+    deepspeed,
+)
 from transformers.trainer import TRAINING_ARGS_NAME
 
 from textgen.chatglm.chatglm_utils import ChatGlmDataset, PROMPT_DICT
@@ -33,7 +41,7 @@ os.environ["TOKENIZERS_PARALLELISM"] = "FALSE"
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
 MODEL_CLASSES = {
-    "chatglm": (AutoConfig, AutoModel, AutoTokenizer),
+    "chatglm": (AutoModel, AutoTokenizer),
 }
 
 
@@ -106,21 +114,26 @@ class ChatGlmModel:
             self.device_map = {"": int(os.environ.get("LOCAL_RANK") or 0)}
 
         self.results = {}
-        config_class, model_class, tokenizer_class = MODEL_CLASSES[model_type]
+        model_class, tokenizer_class = MODEL_CLASSES[model_type]
         if model_name is None:
             model_name = self.args.model_name_or_path
-        config = config_class.from_pretrained(model_name, trust_remote_code=True, **kwargs)
 
         if torch.cuda.is_bf16_supported() and not self.args.bf16:
             logger.warning("GPU supports bf16, you can enable bf16.")
         self.torch_dtype = torch.bfloat16 if self.args.bf16 else (torch.float16 if self.args.fp16 else torch.float32)
         self.model = model_class.from_pretrained(
             model_name,
-            config=config,
-            trust_remote_code=True,
             load_in_8bit=self.args.int8,
             torch_dtype=self.torch_dtype,
             device_map=self.device_map,
+            trust_remote_code=True,
+            quantization_config=BitsAndBytesConfig(
+                load_in_4bit=True,
+                bnb_4bit_use_double_quant=True,
+                bnb_4bit_quant_type="nf4",
+                bnb_4bit_compute_dtype=self.torch_dtype,
+            ) if self.args.qlora else None,
+            **kwargs,
         )
 
         if self.args.int8 or self.args.int4:
@@ -221,22 +234,42 @@ class ChatGlmModel:
                 "Output directory ({}) already exists and is not empty."
                 " Set args.overwrite_output_dir = True to overcome.".format(output_dir)
             )
-        # update model train config
-        if self.args.gradient_checkpointing:
-            self.model.gradient_checkpointing_enable()
-            self.model.config.use_cache = False
-        else:
-            self.model.config.use_cache = True
-        self.model.enable_input_require_grads()
-        if not self.ddp and torch.cuda.device_count() > 1:
-            # keeps Trainer from trying its own DataParallelism when more than 1 gpu is available
-            self.model.is_parallelizable = True
-            self.model.model_parallel = True
-        self.model.lm_head = CastOutputToFloat(self.model.lm_head)
+
+        # Setup train args
+        training_args = TrainingArguments(
+            output_dir=output_dir,
+            learning_rate=self.args.learning_rate,
+            num_train_epochs=self.args.num_train_epochs,
+            logging_dir=f"{output_dir}/logs",
+            logging_steps=self.args.logging_steps,
+            max_steps=self.args.max_steps,
+            per_device_train_batch_size=self.args.per_device_train_batch_size,
+            per_device_eval_batch_size=self.args.per_device_train_batch_size,
+            gradient_accumulation_steps=self.args.gradient_accumulation_steps,
+            gradient_checkpointing=self.args.gradient_checkpointing,
+            torch_compile=self.args.torch_compile,
+            warmup_steps=self.args.warmup_steps,
+            save_steps=self.args.save_steps,
+            optim=self.args.optimizer,
+            save_strategy=self.args.save_strategy,
+            evaluation_strategy='steps' if eval_data is not None else 'no',
+            eval_steps=self.args.eval_steps if eval_data is not None else None,
+            load_best_model_at_end=True if eval_data is not None else False,
+            ddp_find_unused_parameters=False if self.ddp else None,
+            save_total_limit=self.args.save_total_limit,
+            fp16=self.args.fp16,
+            bf16=self.args.bf16,
+            remove_unused_columns=self.args.remove_unused_columns,
+            report_to=self.args.report_to,
+            overwrite_output_dir=self.args.overwrite_output_dir,
+            no_cuda=True if self.device == "cpu" else False,
+            **kwargs
+        )
         resume_from_checkpoint = self.args.resume_from_checkpoint
+        if self.args.qlora and (len(training_args.fsdp) > 0 or deepspeed.is_deepspeed_zero3_enabled()):
+            logger.warning("FSDP and ZeRO3 are both currently incompatible with QLoRA.")
         if 'all' in self.args.lora_target_modules:
             self.args.lora_target_modules = self.find_all_linear_names(self.args.int4, self.args.int8)
-
         # setup peft
         if self.args.use_peft:
             peft_type = self.args.peft_type.upper()
@@ -328,7 +361,7 @@ class ChatGlmModel:
                 # The two files above have a different name depending on how they were saved, but are actually the same.
                 if os.path.exists(checkpoint_name):
                     logger.info(f"Restarting from {checkpoint_name}")
-                    adapters_weights = torch.load(checkpoint_name)
+                    adapters_weights = torch.load(checkpoint_name, map_location='cpu')
                     set_peft_model_state_dict(self.model, adapters_weights)
                 else:
                     logger.warning(f"Checkpoint {checkpoint_name} not found")
@@ -337,6 +370,8 @@ class ChatGlmModel:
         else:
             logger.warning("Now full model params fine-tune, which is slow, set `use_peft=True` for lora fine-tune.")
         os.makedirs(output_dir, exist_ok=True)
+        logger.debug(f"Tokenizer: {self.tokenizer}")
+        logger.debug(f"Model: {self.model}")
 
         # load dataset
         train_dataset = self.load_and_cache_examples(train_data)
@@ -349,36 +384,6 @@ class ChatGlmModel:
             if verbose:
                 logger.debug(f"eval_dataset len: {len(eval_dataset)}, eval_dataset[0]: {eval_dataset[0]}")
 
-        # start train
-        training_args = TrainingArguments(
-            output_dir=output_dir,
-            learning_rate=self.args.learning_rate,
-            num_train_epochs=self.args.num_train_epochs,
-            logging_dir=f"{output_dir}/logs",
-            logging_steps=self.args.logging_steps,
-            max_steps=self.args.max_steps,
-            per_device_train_batch_size=self.args.per_device_train_batch_size,
-            per_device_eval_batch_size=self.args.per_device_train_batch_size,
-            gradient_accumulation_steps=self.args.gradient_accumulation_steps,
-            gradient_checkpointing=self.args.gradient_checkpointing,
-            torch_compile=self.args.torch_compile,
-            warmup_steps=self.args.warmup_steps,
-            save_steps=self.args.save_steps,
-            optim=self.args.optimizer,
-            save_strategy=self.args.save_strategy,
-            evaluation_strategy='steps' if eval_data is not None else 'no',
-            eval_steps=self.args.eval_steps if eval_data is not None else None,
-            load_best_model_at_end=True if eval_data is not None else False,
-            ddp_find_unused_parameters=False if self.ddp else None,
-            save_total_limit=self.args.save_total_limit,
-            fp16=self.args.fp16,
-            bf16=self.args.bf16,
-            remove_unused_columns=self.args.remove_unused_columns,
-            report_to=self.args.report_to,
-            overwrite_output_dir=self.args.overwrite_output_dir,
-            no_cuda=True if self.device == "cpu" else False,
-            **kwargs
-        )
         # Log on each process the small summary:
         logger.warning(
             f"Process rank: {training_args.local_rank}, device: {training_args.device}, n_gpu: {training_args.n_gpu}, "
@@ -386,6 +391,19 @@ class ChatGlmModel:
         )
         if training_args.local_rank <= 0:
             logger.info(f"Training/evaluation parameters {training_args}")
+
+        # Update model train config
+        if self.args.gradient_checkpointing:
+            self.model.gradient_checkpointing_enable()
+            self.model.config.use_cache = False
+        else:
+            self.model.config.use_cache = True
+        self.model.enable_input_require_grads()
+        if torch.cuda.device_count() > 1:
+            # keeps Trainer from trying its own DataParallelism when more than 1 gpu is available
+            self.model.is_parallelizable = True
+            self.model.model_parallel = True
+        self.model.lm_head = CastOutputToFloat(self.model.lm_head)
 
         data_collator = DataCollatorForSeq2Seq(
             self.tokenizer,
@@ -414,7 +432,7 @@ class ChatGlmModel:
 
         # Training
         logger.info("*** Train ***")
-        logger.debug(f"Train dataloader example: {list(trainer.get_train_dataloader())[0]}")
+        logger.debug(f"Train dataloader example: {next(iter(trainer.get_train_dataloader()))}")
         (global_step, training_loss, metrics) = trainer.train(resume_from_checkpoint=resume_from_checkpoint)
         self.results.update(metrics)
         trainer.log_metrics("train", metrics)
@@ -462,16 +480,39 @@ class ChatGlmModel:
         return response
 
     @torch.inference_mode()
-    def predict(self, sentences: List[str], keep_prompt: bool = False,
-                max_length: int = None, add_system_prompt=False, **kwargs):
+    def predict(
+            self,
+            sentences: List[str],
+            keep_prompt: bool = False,
+            add_system_prompt=False,
+            max_length: int = 256,
+            temperature: float = 0.95,
+            top_p: float = 0.7,
+            top_k: int = 40,
+            do_sample: bool = True,
+            repetition_penalty: float = 1.0,
+            length_penalty: float = 2.0,
+            num_beams: int = 1,
+            num_return_sequences: int = 1,
+            **kwargs
+    ) -> List[str]:
         """
         Performs predictions on a list of text.
 
         Args:
             sentences: A python list of text (str) to be sent to the model for prediction. 
             keep_prompt: Whether to keep the prompt in the generated text.
-            max_length: The maximum length of the generated text.
             add_system_prompt: Whether to add the system prompt to the prompt text.
+            max_length: The maximum length of the generated text.
+            temperature: The value used to module the next token probabilities.
+            top_p: The cumulative probability of parameter highest probability vocabulary tokens to keep for nucleus sampling.
+            top_k: The number of highest probability vocabulary tokens to keep for top-k-filtering.
+            do_sample: Whether or not to use sampling ; use greedy decoding otherwise.
+            repetition_penalty: The parameter for repetition penalty. 1.0 means no penalty.
+            length_penalty: The parameter that penalizes longer sequences.
+            num_beams: The number of beams to use for beam search. 1 means no beam search.
+            num_return_sequences: The number of independently computed returned sequences for each element in the batch.
+            **kwargs: Additional arguments for generating sequences.
 
         Returns:
             preds: A python list of the generated sequences.
@@ -498,16 +539,16 @@ class ChatGlmModel:
             inputs = self.tokenizer(batch, padding=True, return_tensors='pt').to(self.device)
             gen_kwargs = {
                 "max_new_tokens": max_length if max_length else self.args.max_length,
-                "temperature": self.args.temperature,
-                "top_p": self.args.top_p,
-                "top_k": self.args.top_k,
-                "do_sample": self.args.do_sample,
-                "repetition_penalty": self.args.repetition_penalty,
-                "length_penalty": self.args.length_penalty,
-                "num_beams": self.args.num_beams,
+                "temperature": temperature if temperature is not None else self.args.temperature,
+                "top_p": top_p if top_p else self.args.top_p,
+                "top_k": top_k if top_k else self.args.top_k,
+                "do_sample": do_sample if do_sample is not None else self.args.do_sample,
+                "repetition_penalty": repetition_penalty if repetition_penalty else self.args.repetition_penalty,
+                "length_penalty": length_penalty if length_penalty else self.args.length_penalty,
+                "num_beams": num_beams if num_beams else self.args.num_beams,
                 "eos_token_id": self.tokenizer.eos_token_id,
                 "pad_token_id": self.tokenizer.pad_token_id,
-                "num_return_sequences": self.args.num_return_sequences,
+                "num_return_sequences": num_return_sequences if num_return_sequences else self.args.num_return_sequences,
                 **kwargs
             }
             outputs = self.model.generate(**inputs, **gen_kwargs)
@@ -525,8 +566,15 @@ class ChatGlmModel:
         return all_outputs
 
     @torch.inference_mode()
-    def chat(self, query: str, history: List[Tuple[str, str]] = None, keep_prompt: bool = False,
-             max_length: int = 2048, add_system_prompt=True, **kwargs):
+    def chat(
+            self,
+            query: str,
+            history: List[Tuple[str, str]] = None,
+            keep_prompt: bool = False,
+            add_system_prompt=True,
+            max_length: int = 2048,
+            **kwargs
+    ):
         """
         Chat with the model
         :param query:
@@ -553,22 +601,37 @@ class ChatGlmModel:
         return response, history
 
     @torch.inference_mode()
-    def stream_chat(self, query: str, history: List[Tuple[str, str]] = None,
-                    max_length: int = 2048, add_system_prompt=True, **kwargs):
+    def stream_chat(
+            self,
+            query: str,
+            history: List[Tuple[str, str]] = None,
+            add_system_prompt=True,
+            max_length: int = 2048,
+            temperature: float = 0.95,
+            top_p: float = 0.7,
+            top_k: int = 40,
+            do_sample: bool = True,
+            repetition_penalty: float = 1.0,
+            length_penalty: float = 2.0,
+            num_beams: int = 1,
+            num_return_sequences: int = 1,
+            **kwargs
+    ):
         """Chat with the model in a streaming fashion"""
         if history is None:
             history = []
         gen_kwargs = {
             "max_new_tokens": max_length if max_length else self.args.max_length,
-            "temperature": self.args.temperature,
-            "top_p": self.args.top_p,
-            "do_sample": self.args.do_sample,
-            "repetition_penalty": self.args.repetition_penalty,
-            "length_penalty": self.args.length_penalty,
-            "num_beams": self.args.num_beams,
+            "temperature": temperature if temperature is not None else self.args.temperature,
+            "top_p": top_p if top_p else self.args.top_p,
+            "top_k": top_k if top_k else self.args.top_k,
+            "do_sample": do_sample if do_sample is not None else self.args.do_sample,
+            "repetition_penalty": repetition_penalty if repetition_penalty else self.args.repetition_penalty,
+            "length_penalty": length_penalty if length_penalty else self.args.length_penalty,
+            "num_beams": num_beams if num_beams else self.args.num_beams,
             "eos_token_id": self.tokenizer.eos_token_id,
             "pad_token_id": self.tokenizer.pad_token_id,
-            "num_return_sequences": self.args.num_return_sequences,
+            "num_return_sequences": num_return_sequences if num_return_sequences else self.args.num_return_sequences,
             **kwargs
         }
         if not history:

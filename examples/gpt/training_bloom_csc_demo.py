@@ -11,7 +11,7 @@ from datasets import load_dataset, load_from_disk
 from loguru import logger
 
 sys.path.append('../..')
-from textgen import BloomModel
+from textgen import GptModel
 
 
 def preprocess_function(example):
@@ -62,7 +62,7 @@ def main():
             "num_train_epochs": args.num_epochs,
             "output_dir": args.output_dir,
         }
-        model = BloomModel(args.model_type, args.model_name, args=model_args)
+        model = GptModel(args.model_type, args.model_name, args=model_args)
         train_df = load_data(args.train_file)
         logger.debug('train_data: {}'.format(train_df))
         eval_df = train_df[:10]
@@ -70,7 +70,7 @@ def main():
         model.train_model(train_df, eval_data=eval_df)
     if args.do_predict:
         if model is None:
-            model = BloomModel(
+            model = GptModel(
                 args.model_type, args.model_name,
                 peft_name=args.output_dir,
                 args={'use_peft': True, 'eval_batch_size': args.batch_size, "max_length": args.max_length, }

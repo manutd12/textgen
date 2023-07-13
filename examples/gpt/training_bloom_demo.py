@@ -10,7 +10,7 @@ import pandas as pd
 from loguru import logger
 
 sys.path.append('../..')
-from textgen import BloomModel
+from textgen import GptModel
 
 def load_data(file_path):
     data = []
@@ -42,7 +42,7 @@ def main():
     args = parser.parse_args()
     logger.info(args)
     model = None
-    # fine-tune BloomModel model
+    # fine-tune GptModel model
     if args.do_train:
         logger.info('Loading data...')
         model_args = {
@@ -57,7 +57,7 @@ def main():
             "output_dir": args.output_dir,
             "resume_from_checkpoint": args.output_dir,
         }
-        model = BloomModel(args.model_type, args.model_name, args=model_args)
+        model = GptModel(args.model_type, args.model_name, args=model_args)
         train_data = load_data(args.train_file)
         logger.debug('train_data: {}'.format(train_data[:10]))
         train_df = pd.DataFrame(train_data, columns=["instruction", "input", "output"])
@@ -66,7 +66,7 @@ def main():
         model.train_model(train_df, eval_data=eval_df)
     if args.do_predict:
         if model is None:
-            model = BloomModel(
+            model = GptModel(
                 args.model_type, args.model_name,
                 peft_name=args.output_dir,
                 args={'use_peft': True, 'eval_batch_size': args.batch_size, "max_length": args.max_length, }

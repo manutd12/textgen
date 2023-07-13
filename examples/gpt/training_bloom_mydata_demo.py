@@ -12,7 +12,7 @@ from datasets import load_dataset, concatenate_datasets
 from loguru import logger
 
 sys.path.append('../..')
-from textgen import BloomModel
+from textgen import GptModel
 
 
 def load_data(data_dir):
@@ -36,7 +36,7 @@ def main():
     parser.add_argument('--model_name', default='bigscience/bloomz-560m', type=str, help='Transformers model or path')
     parser.add_argument('--do_train', action='store_true', help='Whether to run training.')
     parser.add_argument('--do_predict', action='store_true', help='Whether to run predict.')
-    parser.add_argument('--output_dir', default='./outputs-multi-round-v1/', type=str, help='Model output directory')
+    parser.add_argument('--output_dir', default='./outputs-bloom-multi-round-v1/', type=str, help='Model output directory')
     parser.add_argument('--max_seq_length', default=128, type=int, help='Input max sequence length')
     parser.add_argument('--max_length', default=128, type=int, help='Output max sequence length')
     parser.add_argument('--num_epochs', default=1.0, type=float, help='Number of training epochs')
@@ -56,7 +56,7 @@ def main():
             "num_train_epochs": args.num_epochs,
             "output_dir": args.output_dir,
         }
-        model = BloomModel(args.model_type, args.model_name, args=model_args)
+        model = GptModel(args.model_type, args.model_name, args=model_args)
         train_df = load_data(args.train_data_dir)
         logger.debug('train_data: {}'.format(train_df))
         eval_df = train_df[:10]
@@ -64,7 +64,7 @@ def main():
         model.train_model(train_df, eval_data=eval_df)
     if args.do_predict:
         if model is None:
-            model = BloomModel(
+            model = GptModel(
                 args.model_type, args.model_name,
                 peft_name=args.output_dir,
                 args={'use_peft': True, 'eval_batch_size': args.batch_size, "max_length": args.max_length, }
