@@ -21,6 +21,12 @@
 
 **TextGen**实现了多种文本生成模型，包括：LLaMA、ChatGLM、UDA、GPT2、Seq2Seq、BART、T5、SongNet等模型，开箱即用。
 
+## 🔥 News
+[2023/06/15] v1.0.0版本: 新增ChatGLM/LLaMA/Bloom模型的多轮对话微调训练，并发布医疗问诊LoRA模型[shibing624/ziya-llama-13b-medical-lora](https://huggingface.co/shibing624/ziya-llama-13b-medical-lora)。详见[Release-v1.0.0](https://github.com/shibing624/MedicalGPT/releases/tag/1.0.0)
+
+[2023/06/02] v0.2.7版本: 新增ChatGLM/LLaMA/Bloom模型的SFT微调训练，并发布适用于通用对话和中文纠错的LoRA模型。详见[Release-v0.2.7](https://github.com/shibing624/MedicalGPT/releases/tag/0.2.7)
+
+
 ## 😊 Feature
 
 - [ChatGLM](textgen/chatglm)：本项目基于PyTorch实现了ChatGLM-6B模型LoRA微调训练和预测，可以用于句子纠错、对话等文本生成任务
@@ -40,9 +46,7 @@ release基于`textgen`训练的中文模型，模型已经release到HuggingFace 
 
 | Model                                                                                                     | Arch       | Introduction                                                                                                                                                                | Train Script                                                                                                                                 | Predict Script                                                                                                        | 
 |:----------------------------------------------------------------------------------------------------------|:-----------|:-------------------------------------------------------------------------------------------------------------------------------------------------------------------------|:---------------------------------------------------------------------------------------------------------------------------------------------|:----------------------------------------------------------------------------------------------------------------------|
-| [shibing624/prompt-t5-base-chinese](https://huggingface.co/shibing624/prompt-t5-base-chinese)             | T5         | 中文NLP多任务Prompt模型                                                                                                                                                         | [prompt-t5-base-chinese.md](https://github.com/shibing624/textgen/blob/main/docs/prompt-t5-base-chinese.md)                                  | [predict script](https://github.com/shibing624/textgen/blob/main/examples/t5/t5_prompt_demo.py)                       |
 | [shibing624/t5-chinese-couplet](https://huggingface.co/shibing624/t5-chinese-couplet)                     | T5         | fine-tuned中文对联后的模型                                                                                                                                                       | [对联生成模型调研](https://github.com/shibing624/textgen/blob/main/docs/%E5%AF%B9%E8%81%94%E7%94%9F%E6%88%90%E6%A8%A1%E5%9E%8B%E5%AF%B9%E6%AF%94.md) | [predict script](https://github.com/shibing624/textgen/blob/main/examples/t5/t5_couplet_demo.py)                      |
-| [shibing624/songnet-base-chinese](https://huggingface.co/shibing624/songnet-base-chinese)                 | SongNet    | SongNet预训练模型                                                                                                                                                             | -                                                                                                                                            | -                                                                                                                     |
 | [shibing624/songnet-base-chinese-songci](https://huggingface.co/shibing624/songnet-base-chinese-songci)   | SongNet    | fine-tuned宋词后的模型                                                                                                                                                         | [training script](https://github.com/shibing624/textgen/blob/main/examples/songnet/training_zh_songnet_demo.py)                              | [predict script](https://github.com/shibing624/textgen/blob/main/examples/songnet/songnet_songci_demo.py)             |
 | [shibing624/songnet-base-chinese-couplet](https://huggingface.co/shibing624/songnet-base-chinese-couplet) | SongNet    | fine-tuned对联后的模型                                                                                                                                                         | [training script](https://github.com/shibing624/textgen/blob/main/examples/songnet/training_zh_songnet_demo.py)                              | [predict script](https://github.com/shibing624/textgen/blob/main/examples/songnet/songnet_couplet_demo.py)            |
 | [shibing624/chatglm-6b-csc-zh-lora](https://huggingface.co/shibing624/chatglm-6b-csc-zh-lora)             | ChatGLM-6B | 在27万中文拼写纠错数据[shibing624/CSC](https://huggingface.co/datasets/shibing624/CSC)上微调了一版ChatGLM-6B，纠错效果有提升，发布微调后的LoRA权重                                                        | [training script](https://github.com/shibing624/textgen/blob/main/examples/chatglm/training_chatglm_csc_demo.py)                             | [predict script](https://github.com/shibing624/textgen/blob/main/examples/chatglm/csc_demo.py)                        |
@@ -115,7 +119,7 @@ python setup.py install
 
 #### 使用 ChatGLM-6B 微调后的模型
 
-example: [examples/chatglm/predict_demo.py](https://github.com/shibing624/textgen/blob/main/examples/chatglm/predict_demo.py)
+example: [examples/chatglm/inference_demo.py](https://github.com/shibing624/textgen/blob/main/examples/chatglm/inference_demo.py)
 
 ```python
 from textgen import ChatGlmModel
@@ -129,7 +133,7 @@ PS：由于使用了开发中的peft库，可能由于版本更新，导致LoRA�
 
 #### 训练 ChatGLM-6B 微调模型
 
-1. 支持自定义训练数据集和训练参数，数据集格式参考[examples/data/zh_csc_test.tsv](https://github.com/shibing624/textgen/blob/main/examples/data/zh_csc_test.tsv)或者[shibing624/alpaca-zh](https://huggingface.co/datasets/shibing624/alpaca-zh)
+1. 支持自定义训练数据集和训练参数，数据集格式参考[examples/data/zh_csc_test.tsv](https://github.com/shibing624/textgen/blob/main/examples/data/zh_csc_test.tsv)或者[examples/data/json_files/belle_10.json](https://github.com/shibing624/textgen/blob/main/examples/data/json_files/belle_10.json)
 2. 支持AdaLoRA、LoRA、P_Tuning、Prefix_Tuning等部分参数微调方法，也支持全参微调
 3. 支持多卡训练，支持混合精度训练
 
@@ -169,7 +173,7 @@ python -m textgen/chatglm/merge_peft_adapter.py \
 
 #### 使用 LLaMA 微调后的模型
 
-example: [examples/llama/predict_demo.py](https://github.com/shibing624/textgen/blob/main/examples/llama/predict_demo.py)
+example: [examples/gpt/inference_demo.py](https://github.com/shibing624/textgen/blob/main/examples/gpt/inference_demo.py)
 
 <details>
 <summary>show code example and result</summary>
@@ -178,14 +182,14 @@ example: [examples/llama/predict_demo.py](https://github.com/shibing624/textgen/
 import sys
 
 sys.path.append('../..')
-from textgen import LlamaModel
+from textgen import GptModel
 
 
 def generate_prompt(instruction):
   return f"""Below is an instruction that describes a task. Write a response that appropriately completes the request.\n\n### Instruction:{instruction}\n\n### Response:"""
 
 
-model = LlamaModel("llama", "decapoda-research/llama-7b-hf", peft_name="ziqingyang/chinese-alpaca-lora-7b")
+model = GptModel("llama", "decapoda-research/llama-7b-hf", peft_name="ziqingyang/chinese-alpaca-lora-7b")
 predict_sentence = generate_prompt("问：用一句话描述地球为什么是独一无二的。\n答：")
 r = model.predict([predict_sentence])
 print(r)  # ['地球是唯一一颗拥有生命的行星。']
@@ -208,7 +212,7 @@ example: [examples/llama/training_llama_demo.py](https://github.com/shibing624/t
 
 执行以下命令：
 ```shell
-python -m textgen/llama/merge_peft_adapter.py \
+python -m textgen/gpt/merge_peft_adapter.py \
     --base_model_name_or_path path_to_original_base_model_dir \
     --peft_model_path path_to_chinese_llama_or_alpaca_lora \
     --output_type [pth|huggingface]
@@ -588,7 +592,7 @@ output:
 
 ## ✅ Todo
 
-1. [ ] add multiple rounds of dialogue data fine-tuning method
+1. [x] add multiple rounds of dialogue data fine-tuning method
 2. [x] add reward model finetuning, go to [shibing624/MeidcalGPT](https://github.com/shibing624/MedicalGPT)
 3. [x] add rl finetuning, go to [shibing624/MeidcalGPT](https://github.com/shibing624/MedicalGPT)
 4. [x] add medical reward dataset
@@ -618,8 +622,11 @@ output:
 ```
 
 ## 🤗 License
+This repository is licensed under [The Apache License 2.0](LICENSE).
 
-授权协议为 [The Apache License 2.0](/LICENSE)，可免费用做商业用途。请在产品说明中附加textgen的链接和授权协议。
+Please follow the [Model Card](https://github.com/facebookresearch/llama/blob/main/MODEL_CARD.md) to use the LLaMA model.
+
+Please follow the [RAIL License](https://huggingface.co/spaces/bigscience/license) to use the BLOOM & BLOOMZ model.
 
 ## 😍 Contribute
 

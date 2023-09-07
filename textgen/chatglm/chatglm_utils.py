@@ -63,9 +63,8 @@ def preprocess_data(data):
             source_len = len(tokenizer(
                 PROMPT_DICT['prompt_multi_round_no_input'].split('\n\n')[0] + '\n\n')['input_ids'])
             labels[:source_len] = [IGNORE_INDEX] * source_len
-
-            matches = re.finditer(r'### (?!Assistant:)(.*?)</s>', prompt, re.DOTALL)
             input_tokens = tokenizer.convert_ids_to_tokens(example["input_ids"])
+            matches = re.finditer(r'### (?!Assistant:)(.*?)</s>', prompt, re.DOTALL)
             for match in matches:
                 start_pos, end_pos = match.span()
                 start_idx = None
@@ -86,6 +85,7 @@ def preprocess_data(data):
                 if start_idx is not None and end_idx is not None:
                     for i in range(start_idx, end_idx - 1):
                         labels[i] = IGNORE_INDEX
+        # Padding labels to full max length
         example['labels'] = [IGNORE_INDEX] * (full_max_length - len(labels)) + labels
     else:
         full_prompt = prompt + target_text + tokenizer.eos_token
