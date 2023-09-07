@@ -10,6 +10,7 @@ import os
 import torch
 sys.path.append('..')
 from textgen import LlamaModel
+from textgen import ChatGlmModel
 import random
 
 
@@ -25,15 +26,15 @@ def load_data(file_path):
                 output = terms[2].replace('\\n', '\n')
                 data.append([instruction, input, output])
             else:
-                logger.warning(f'line error: {line}')
+                logger.warning(f'line error: {terms}')
     return data
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--train_file', default='/apdcephfs_cq3/share_2973545/data/dataset/llm_sogou_ad/llm_sogou_ad_train.txt', type=str, help='Training data file')
-    parser.add_argument('--test_file', default='/apdcephfs_cq3/share_2973545/data/dataset/llm_sogou_ad/llm_sogou_ad_test.txt', type=str, help='Test data file')
-    parser.add_argument('--eval_file', default='/apdcephfs_cq3/share_2973545/data/dataset/llm_sogou_ad/llm_sogou_ad_eval.txt', type=str, help='Eval data file')
+    parser.add_argument('--train_file', default='/apdcephfs_cq3/share_2973545/data/dataset/llm_sogou_ad/llm_sogou_ad_train_500.txt', type=str, help='Training data file')
+    parser.add_argument('--test_file', default='/apdcephfs_cq3/share_2973545/data/dataset/llm_sogou_ad/llm_sogou_ad_test_500.txt', type=str, help='Test data file')
+    parser.add_argument('--eval_file', default='/apdcephfs_cq3/share_2973545/data/dataset/llm_sogou_ad/llm_sogou_ad_eval_500.txt', type=str, help='Eval data file')
     parser.add_argument('--model_type', default='chatglm', type=str, help='Transformers model type')
     parser.add_argument('--model_name', default='/apdcephfs_cq3/share_2973545/data/models/THUDM-chatglm-6b', type=str, help='Transformers model or path')
     parser.add_argument('--do_train', action='store_true', help='Whether to run training.')
@@ -46,6 +47,7 @@ def main():
     parser.add_argument('--num_epochs', default=1, type=float, help='Number of training epochs')
     parser.add_argument('--batch_size', default=8, type=int, help='Batch size')
     parser.add_argument('--eval_steps', default=500, type=int, help='Eval every X steps')
+    parser.add_argument('--save_strategy', default="step", type=str, help='save_strategy')
     parser.add_argument('--save_steps', default=500, type=int, help='Save checkpoint every X steps')
     parser.add_argument('--save_total_limit', default=100, type=int, help='max nums of save checkpoints')
     #parser.add_argument("--local_rank", type=int, default=0)
@@ -70,20 +72,30 @@ def main():
             "eval_steps": args.eval_steps,
             "save_steps": args.save_steps,
         }
-        model = LlamaModel(args.model_type, args.model_name, args=model_args)
+        if args.model_type == "llama":
+            model = LlamaModel(args.model_type, args.model_name, args=model_args)
+        elif args.model_type == "chatglm":
+            model = ChatGlmModel(args.model_type, args.model_name, args=model_args)
         train_data = load_data(args.train_file)
-        logger.debug('train_data: {}'.format(train_data[:10]))
+        # logger.debug('train_data: {}'.format(train_data[:10]))
         train_df = pd.DataFrame(train_data, columns=["instruction", "input", "output"])
         eval_data = load_data(args.eval_file)
-        logger.debug('eval_data: {}'.format(eval_data[:10]))
+        # logger.debug('eval_data: {}'.format(eval_data[:10]))
         eval_df = pd.DataFrame(eval_data, columns=["instruction", "input", "output"])
         model.train_model(train_df, eval_data=eval_df)
     if args.do_predict:
         if model is None:
-            model = LlamaModel(
-                args.model_type, args.model_name,
-                args={'use_peft': True, 'eval_batch_size': args.batch_size,
+            if args.model_type == "llama":
+                model = LlamaModel(
+                    args.model_type, args.model_name,
+                    args={'use_peft': True, 'eval_batch_size': args.batch_size,
                       'output_dir': args.output_dir, "max_length": args.max_length, }
+                )
+            elif args.model_type == "chatglm":
+                model = ChatGlmModel(
+                    args.model_type, args.model_name,
+                    peft_name=args.output_dir,
+                    args={'use_peft': True, 'eval_batch_size': args.batch_size, "max_length": args.max_length, }
             )
         #test_data = load_data(args.test_file)[:8]
         test_data = random.sample(load_data(args.test_file), 8)
@@ -106,19 +118,27 @@ def main():
         pd.set_option('display.max_colwidth', None)
         print(test_df)
 
-        response, history = model.chat("给出三个保持健康的秘诀。", history=[])
-        print(response)
-        response, history = model.chat(
-            "给定一篇文章，纠正里面的语法错误。\n我去年很喜欢在公园里跑步，但因为最近天气太冷所以我不去了。\n",
-            history=history)
-        print(response)
+        # response, history = model.chat("给出三个保持健康的秘诀。", history=[])
+        # print(response)
+        # response, history = model.chat(
+        #     "给定一篇文章，纠正里面的语法错误。\n我去年很喜欢在公园里跑步，但因为最近天气太冷所以我不去了。\n",
+        #     history=history)
+        # print(response)
     if args.do_debug:
         if model is None:
-            model = LlamaModel(
-                args.model_type, args.model_name, args.peft_name,
-                args={'use_peft': True, 'eval_batch_size': args.batch_size,
+            if args.model_type == "llama":
+                model = LlamaModel(
+                    args.model_type, args.model_name,
+                    args={'use_peft': True, 'eval_batch_size': args.batch_size,
                       'output_dir': args.output_dir, "max_length": args.max_length, }
+                )
+            elif args.model_type == "chatglm":
+                model = ChatGlmModel(
+                    args.model_type, args.model_name,
+                    peft_name=args.output_dir,
+                    args={'use_peft': True, 'eval_batch_size': args.batch_size, "max_length": args.max_length, }
             )
+        #test_data = load_data(args.test_file)[:8]
 
         prompt = ["对于给定的搜索query，生成2条低点击率的广告\nquery：注册会计师",
                   "对于给定的搜索query，生成4条高点击率的广告\nquery：注册会计师",

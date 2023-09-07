@@ -1,11 +1,11 @@
-torchrun --nproc_per_node 4 finetune_searchad.py \
-  --num_epochs 3 \
-  --batch_size 6 \
-  --model_type llama \
+torchrun --nproc_per_node 8 finetune_searchad.py \
+  --num_epochs 5 \
+  --batch_size 8 \
+  --model_type chatglm \
   --max_seq_length 128 \
   --max_length 512 \
-  --model_name /apdcephfs_cq3/share_2973545/data/models/shibing624/chinese-alpaca-plus-7b-hf \
+  --model_name /apdcephfs/private_curvasong/output/ad_glm_rrhf_ddp/merge_lora \
   --do_train \
-  --do_predict \
-  --output_dir /apdcephfs/private_curvasong/ad_llm/llama_sogou_ad/output \
-  --save_total_limit 100 \
+  --output_dir /apdcephfs/private_curvasong/output/glm_rrhf_sft \
+  --save_total_limit 10 \
+  --save_strategy epoch \
